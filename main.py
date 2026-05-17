@@ -37,6 +37,12 @@ def demo(fs: FS):
     print("\n[stat] symlink itself:")
     print("  " + fs.stat("/home/user/link_to_docs"))
 
+    print("\n[symlink] relative target as MIDDLE component (fix check)")
+    print("  /home/user/rel_docs -> docs  (relative target)")
+    fs.symlink("docs", "/home/user/rel_docs")
+    data = fs.read("/home/user/rel_docs/readme.txt", 0, 100)
+    print("  [read] /home/user/rel_docs/readme.txt: " + repr(data))
+
     print("\n[cd] Changing directory to /home/user...")
     fs.cd("/home/user")
     print(f"[pwd] CWD = {fs.cwd}")

@@ -347,23 +347,44 @@ class FS:
         self._inodes.write(ino_idx, ino)
 
     def _resolve(self, path: str, follow_depth: int = 0) -> tuple[int, Inode]:
+        start = self._sb.root_inode if path.startswith("/") else self._cwd
+        return self._resolve_from(start, path, follow_depth)
+
+    def _follow_symlink(self, idx: int, parent_idx: int,
+                        follow_depth: int) -> tuple[int, Inode]:
+        """Resolve a (possibly chained) symlink at `idx`.
+
+        A relative symlink target is resolved relative to `parent_idx` —
+        the directory that contains the symlink — not the cwd.
+        """
+        ino = self._inodes.read(idx)
+        if ino.itype != T_SYMLINK:
+            return idx, ino
+        if follow_depth > SYMLINK_MAX_DEPTH:
+            raise OSError(f"Symlink loop detected (depth > {SYMLINK_MAX_DEPTH})")
+        target = self._inode_read(ino, 0, ino.size).decode()
+        base = self._sb.root_inode if target.startswith("/") else parent_idx
+        return self._resolve_from(base, target, follow_depth + 1)
+
+    def _resolve_from(self, start_idx: int, path: str,
+                      follow_depth: int = 0) -> tuple[int, Inode]:
         if follow_depth > SYMLINK_MAX_DEPTH:
             raise OSError(f"Symlink loop detected (depth > {SYMLINK_MAX_DEPTH})")
 
         if path == "" or path == ".":
-            return self._cwd, self._inodes.read(self._cwd)
+            return start_idx, self._inodes.read(start_idx)
 
-        if path.startswith("/"):
-            cur_idx = self._sb.root_inode
-        else:
-            cur_idx = self._cwd
+        cur_idx = self._sb.root_inode if path.startswith("/") else start_idx
+        # Directory containing `cur_idx`; used as the base for resolving
+        # relative symlink targets encountered along the way.
+        parent_idx = cur_idx
 
         parts = [p for p in path.split("/") if p]
         for part in parts:
             cur_ino = self._inodes.read(cur_idx)
             if cur_ino.itype == T_SYMLINK:
-                target = self._inode_read(cur_ino, 0, cur_ino.size).decode()
-                cur_idx, cur_ino = self._resolve(target, follow_depth + 1)
+                cur_idx, cur_ino = self._follow_symlink(
+                    cur_idx, parent_idx, follow_depth)
                 if cur_ino.itype != T_DIR:
                     raise NotADirectoryError("Symlink target is not a directory")
             if cur_ino.itype != T_DIR:
@@ -372,17 +393,18 @@ class FS:
                 continue
             if part == "..":
                 found = self._dir_lookup(cur_idx, "..")
+                parent_idx = cur_idx
                 cur_idx = found if found is not None else cur_idx
                 continue
             found = self._dir_lookup(cur_idx, part)
             if found is None:
                 raise FileNotFoundError(f"'{part}' not found in path '{path}'")
+            parent_idx = cur_idx
             cur_idx = found
 
         ino = self._inodes.read(cur_idx)
         if ino.itype == T_SYMLINK:
-            target = self._inode_read(ino, 0, ino.size).decode()
-            return self._resolve(target, follow_depth + 1)
+            return self._follow_symlink(cur_idx, parent_idx, follow_depth)
         return cur_idx, ino
 
     def _resolve_no_follow(self, path: str) -> tuple[int, Inode]:
